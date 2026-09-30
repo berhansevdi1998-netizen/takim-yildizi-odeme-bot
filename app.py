@@ -1,9 +1,7 @@
 import os
-import threading
 from datetime import datetime
 
 import psycopg
-from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -14,32 +12,27 @@ from telegram.ext import (
     filters,
 )
 
+
 # =========================================================
-# RENDER WEB SERVER
+# AYARLAR
 # =========================================================
 
-web_app = Flask(__name__)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+WEBHOOK_URL = "https://takim-yildizi-odeme-bot.onrender.com"
+PORT = int(os.environ.get("PORT", "10000"))
 
-@web_app.route("/")
-def home():
-    return "Takim Yildizi Odeme Bot aktif."
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL bulunamadi.")
 
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN bulunamadi.")
 
 
 # =========================================================
 # VERITABANI
 # =========================================================
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL bulunamadi.")
-
 
 def get_db():
     return psycopg.connect(DATABASE_URL)
@@ -798,14 +791,9 @@ async def iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 
 def main():
-    TOKEN = os.environ.get("BOT_TOKEN")
-
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN bulunamadi.")
-
     application = (
         Application.builder()
-        .token(TOKEN)
+        .token(BOT_TOKEN)
         .build()
     )
 
@@ -937,17 +925,18 @@ def main():
         )
     )
 
-    print("Takim Yildizi Odeme Bot baslatiliyor...")
+    print(
+        "Takim Yildizi Odeme Bot webhook ile baslatiliyor..."
+    )
 
-    application.run_polling()
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="telegram",
+        webhook_url=f"{WEBHOOK_URL}/telegram",
+        drop_pending_updates=False,
+    )
 
 
 if __name__ == "__main__":
-    web_thread = threading.Thread(
-        target=run_web,
-        daemon=True
-    )
-
-    web_thread.start()
-
     main()
