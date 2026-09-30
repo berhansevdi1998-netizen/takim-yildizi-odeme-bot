@@ -67,12 +67,7 @@ def veritabani_hazirla():
 
 
 veritabani_hazirla()
-with get_db() as conn:
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM odemeler")
-    conn.commit()
 
-print("TUM ESKI ODEME KAYITLARI SILINDI")
 
 # =========================================================
 # DURUMLAR
