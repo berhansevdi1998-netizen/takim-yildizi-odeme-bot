@@ -1,6 +1,9 @@
 import os
 import sqlite3
+import threading
 from datetime import datetime
+
+from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,9 +14,27 @@ from telegram.ext import (
     filters,
 )
 
-MUSTERI, TUTAR, NOT = range(3)
+# -----------------------------
+# RENDER WEB SERVER
+# -----------------------------
 
-# Veritabanı
+web_app = Flask(__name__)
+
+
+@web_app.route("/")
+def home():
+    return "Takim Yildizi Odeme Bot aktif."
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+
+# -----------------------------
+# VERITABANI
+# -----------------------------
+
 conn = sqlite3.connect("odemeler.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -26,7 +47,10 @@ CREATE TABLE IF NOT EXISTS odemeler (
     tarih TEXT NOT NULL
 )
 """)
+
 conn.commit()
+
+MUSTERI, TUTAR, NOT = range(3)
 
 ana_menu = ReplyKeyboardMarkup(
     [
@@ -38,36 +62,78 @@ ana_menu = ReplyKeyboardMarkup(
 )
 
 
+# -----------------------------
+# ANA MENU
+# -----------------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
-        "💰 Takım Yıldızı Ödeme Takip\n\n"
+        "💰 TAKIM YILDIZI ÖDEME TAKİP\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=ana_menu
     )
 
 
+# -----------------------------
+# ODEME EKLE
+# -----------------------------
+
 async def odeme_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏢 Müşteri adını yazınız:")
+
+    await update.message.reply_text(
+        "🏢 Müşteri adını yazınız:"
+    )
+
     return MUSTERI
 
 
 async def musteri_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["musteri"] = update.message.text
-    await update.message.reply_text("💰 Gelen ödeme tutarını yazınız:")
+
+    context.user_data["musteri"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        "💰 Gelen ödeme tutarını yazınız:\n\n"
+        "Örnek: 15000"
+    )
+
     return TUTAR
 
 
 async def tutar_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text.strip()
-    text = text.replace("₺", "").replace("TL", "").replace("tl", "")
-    text = text.replace(".", "").replace(",", ".")
+
+    text = (
+        text.replace("₺", "")
+        .replace("TL", "")
+        .replace("tl", "")
+        .replace(" ", "")
+    )
+
+    # 15.000 / 15,000 / 15000 gibi girişleri kabul et
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+    elif "," in text:
+        text = text.replace(",", ".")
+    elif "." in text:
+        parcalar = text.split(".")
+        if len(parcalar[-1]) == 3:
+            text = text.replace(".", "")
 
     try:
         tutar = float(text)
+
+        if tutar <= 0:
+            raise ValueError
+
     except ValueError:
+
         await update.message.reply_text(
-            "❌ Tutarı anlayamadım.\nÖrnek: 15000"
+            "❌ Tutarı anlayamadım.\n\n"
+            "Örneğin sadece 15000 yazabilirsiniz:"
         )
+
         return TUTAR
 
     context.user_data["tutar"] = tutar
@@ -81,6 +147,7 @@ async def tutar_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     notlar = update.message.text.strip()
 
     if notlar == "-":
@@ -92,9 +159,14 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tarih = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute(
-        "INSERT INTO odemeler (musteri, tutar, notlar, tarih) VALUES (?, ?, ?, ?)",
+        """
+        INSERT INTO odemeler
+        (musteri, tutar, notlar, tarih)
+        VALUES (?, ?, ?, ?)
+        """,
         (musteri, tutar, notlar, tarih)
     )
+
     conn.commit()
 
     mesaj = (
@@ -105,7 +177,7 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if notlar:
-        mesaj += f"📝 Not: {notlar}"
+        mesaj += f"📝 Not: {notlar}\n"
 
     await update.message.reply_text(
         mesaj,
@@ -117,25 +189,49 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# -----------------------------
+# BU HAFTA
+# -----------------------------
+
 async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cursor.execute("""
         SELECT musteri, tutar, notlar, tarih
         FROM odemeler
-        WHERE strftime('%Y-%W', tarih) = strftime('%Y-%W', 'now', 'localtime')
         ORDER BY tarih DESC
     """)
 
-    kayitlar = cursor.fetchall()
+    tum_kayitlar = cursor.fetchall()
+
+    simdi = datetime.now()
+
+    kayitlar = []
+
+    for kayit in tum_kayitlar:
+
+        tarih = datetime.strptime(
+            kayit[3],
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        if (
+            tarih.isocalendar().year == simdi.isocalendar().year
+            and
+            tarih.isocalendar().week == simdi.isocalendar().week
+        ):
+            kayitlar.append(kayit)
 
     if not kayitlar:
+
         await update.message.reply_text(
             "📋 Bu hafta henüz ödeme kaydı yok.",
             reply_markup=ana_menu
         )
+
         return
 
     toplam = 0
+
     mesaj = "📋 BU HAFTANIN ÖDEMELERİ\n\n"
 
     for musteri, tutar, notlar, tarih in kayitlar:
@@ -156,26 +252,42 @@ async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if notlar:
             mesaj += f"📝 {notlar}\n"
 
-        mesaj += "\n"
+        mesaj += "────────────\n"
 
-    mesaj += f"💵 HAFTALIK TOPLAM: {toplam:,.2f} ₺"
+    mesaj += (
+        "\n"
+        f"💵 HAFTALIK TOPLAM\n"
+        f"{toplam:,.2f} ₺"
+    )
 
-    await update.message.reply_text(mesaj)
+    await update.message.reply_text(
+        mesaj,
+        reply_markup=ana_menu
+    )
 
+
+# -----------------------------
+# GECMIS ODEMELER
+# -----------------------------
 
 async def gecmis(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cursor.execute("""
         SELECT musteri, tutar, notlar, tarih
         FROM odemeler
-        ORDER BY tarih DESC
+        ORDER BY id DESC
         LIMIT 30
     """)
 
     kayitlar = cursor.fetchall()
 
     if not kayitlar:
-        await update.message.reply_text("Henüz ödeme kaydı bulunmuyor.")
+
+        await update.message.reply_text(
+            "Henüz ödeme kaydı bulunmuyor.",
+            reply_markup=ana_menu
+        )
+
         return
 
     mesaj = "🔎 SON ÖDEMELER\n\n"
@@ -196,22 +308,33 @@ async def gecmis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if notlar:
             mesaj += f"📝 {notlar}\n"
 
-        mesaj += "\n"
+        mesaj += "────────────\n"
 
-    await update.message.reply_text(mesaj)
+    await update.message.reply_text(
+        mesaj,
+        reply_markup=ana_menu
+    )
 
+
+# -----------------------------
+# IPTAL
+# -----------------------------
 
 async def iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
 
     await update.message.reply_text(
-        "İşlem iptal edildi.",
+        "❌ İşlem iptal edildi.",
         reply_markup=ana_menu
     )
 
     return ConversationHandler.END
 
+
+# -----------------------------
+# BOTU BASLAT
+# -----------------------------
 
 def main():
 
@@ -220,7 +343,11 @@ def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN bulunamadı.")
 
-    app = Application.builder().token(TOKEN).build()
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
 
     odeme_conversation = ConversationHandler(
 
@@ -232,6 +359,7 @@ def main():
         ],
 
         states={
+
             MUSTERI: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -255,32 +383,56 @@ def main():
         },
 
         fallbacks=[
-            CommandHandler("iptal", iptal)
+            CommandHandler(
+                "iptal",
+                iptal
+            )
         ],
     )
 
-    app.add_handler(CommandHandler("start", start))
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
 
-    app.add_handler(odeme_conversation)
+    application.add_handler(
+        odeme_conversation
+    )
 
-    app.add_handler(
+    application.add_handler(
         MessageHandler(
-            filters.Regex("^📋 Bu Haftanın Ödemeleri$"),
+            filters.Regex(
+                "^📋 Bu Haftanın Ödemeleri$"
+            ),
             bu_hafta
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         MessageHandler(
-            filters.Regex("^🔎 Geçmiş Ödemeler$"),
+            filters.Regex(
+                "^🔎 Geçmiş Ödemeler$"
+            ),
             gecmis
         )
     )
 
-    print("Ödeme takip botu çalışıyor...")
+    print("Takim Yildizi Odeme Bot baslatiliyor...")
 
-    app.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
+
+    # Render'in Web Service kontrolü için
+    web_thread = threading.Thread(
+        target=run_web,
+        daemon=True
+    )
+
+    web_thread.start()
+
+    # Telegram botu
     main()
