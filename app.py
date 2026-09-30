@@ -4,7 +4,7 @@ from datetime import datetime
 
 import psycopg
 from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -49,7 +49,6 @@ def veritabani_hazirla():
     with get_db() as conn:
         with conn.cursor() as cur:
 
-            # Ana tablo
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS odemeler (
                     id BIGSERIAL PRIMARY KEY,
@@ -60,7 +59,6 @@ def veritabani_hazirla():
                 )
             """)
 
-            # Eski kayıtları bozmadan yeni sütunu ekle
             cur.execute("""
                 ALTER TABLE odemeler
                 ADD COLUMN IF NOT EXISTS odeme_turu TEXT
@@ -76,7 +74,7 @@ veritabani_hazirla()
 # TELEGRAM AYARLARI
 # =========================================================
 
-MUSTERI, TUTAR, ODEME_TURU, NOT = range(4)
+MUSTERI, TUTAR, ODEME_TURU = range(3)
 
 ana_menu = ReplyKeyboardMarkup(
     [
@@ -143,7 +141,6 @@ async def tutar_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         .replace(" ", "")
     )
 
-    # 15.000 / 15,000 / 15000 gibi girişleri kabul eder
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".")
     elif "," in text:
@@ -194,27 +191,9 @@ async def odeme_turu_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return ODEME_TURU
 
-    context.user_data["odeme_turu"] = secim
-
-    await update.message.reply_text(
-        "📝 Notunuzu yazınız.\n\n"
-        "Not eklemek istemiyorsanız - yazabilirsiniz:",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    return NOT
-
-
-async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    notlar = update.message.text.strip()
-
-    if notlar == "-":
-        notlar = ""
-
     musteri = context.user_data["musteri"]
     tutar = context.user_data["tutar"]
-    odeme_turu = context.user_data["odeme_turu"]
-
+    odeme_turu = secim
     tarih = datetime.now()
 
     with get_db() as conn:
@@ -228,7 +207,7 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (
                     musteri,
                     tutar,
-                    notlar,
+                    "",
                     tarih,
                     odeme_turu
                 )
@@ -241,11 +220,8 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏢 Müşteri: {musteri}\n"
         f"💰 Ödeme: {tutar:,.2f} ₺\n"
         f"💳 Ödeme Türü: {odeme_turu}\n"
-        f"📅 Tarih: {tarih.strftime('%d.%m.%Y')}\n"
+        f"📅 Tarih: {tarih.strftime('%d.%m.%Y')}"
     )
-
-    if notlar:
-        mesaj += f"📝 Not: {notlar}\n"
 
     await update.message.reply_text(
         mesaj,
@@ -263,7 +239,6 @@ async def not_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     simdi = datetime.now()
-
     yil, hafta, _ = simdi.isocalendar()
 
     with get_db() as conn:
@@ -291,7 +266,6 @@ async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 Bu hafta henüz ödeme kaydı yok.",
             reply_markup=ana_menu
         )
-
         return
 
     toplam = 0
@@ -304,20 +278,15 @@ async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for musteri, tutar, notlar, tarih, odeme_turu in kayitlar:
         tutar = float(tutar)
-
         toplam += tutar
 
         if odeme_turu == "💵 Nakit":
             nakit_toplam += tutar
-
         elif odeme_turu == "🧾 Faturalı Ödeme":
             faturali_toplam += tutar
-
         elif odeme_turu == "🏦 Şahsi IBAN":
             iban_toplam += tutar
-
         else:
-            # Yeni özellik eklenmeden önceki kayıtlar
             eski_toplam += tutar
 
         mesaj += (
@@ -332,6 +301,7 @@ async def bu_hafta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mesaj += f"📅 {tarih.strftime('%d.%m.%Y')}\n"
 
+        # Eski kayıtlarda not varsa göstermeye devam eder
         if notlar:
             mesaj += f"📝 {notlar}\n"
 
@@ -389,7 +359,6 @@ async def gecmis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Henüz ödeme kaydı bulunmuyor.",
             reply_markup=ana_menu
         )
-
         return
 
     mesaj = "🔎 SON ÖDEMELER\n\n"
@@ -478,13 +447,6 @@ def main():
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     odeme_turu_al
-                )
-            ],
-
-            NOT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    not_al
                 )
             ],
         },
