@@ -211,6 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=ana_menu
     )
+    return ConversationHandler.END
 
 
 # =========================================================
@@ -228,7 +229,11 @@ async def odeme_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def musteri_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["musteri"] = update.message.text.strip()
+    musteri = update.message.text.strip()
+    if not musteri:
+        await update.message.reply_text("❌ Müşteri adı boş olamaz. Yeniden yazınız:")
+        return MUSTERI
+    context.user_data["musteri"] = musteri
 
     await update.message.reply_text(
         "💰 Gelen ödeme tutarını yazınız:\n\n"
@@ -239,6 +244,9 @@ async def musteri_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tutar_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("musteri"):
+        await update.message.reply_text("🏢 Müşteri bilgisi bulunamadı. Müşteri adını yeniden yazınız:")
+        return MUSTERI
     try:
         tutar = tutar_cevir(update.message.text)
 
@@ -277,8 +285,16 @@ async def odeme_turu_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return ODEME_TURU
 
-    musteri = context.user_data["musteri"]
-    tutar = context.user_data["tutar"]
+    musteri = context.user_data.get("musteri")
+    tutar = context.user_data.get("tutar")
+    if not musteri or tutar is None:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "⚠️ Ödeme işleminin önceki bilgileri bulunamadı. "
+            "Kayıt yapılmadı. Lütfen 💰 Ödeme Ekle ile yeniden başlayınız.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
     tarih = datetime.now()
 
     with get_db() as conn:
@@ -600,7 +616,10 @@ async def yeni_musteri(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return YENI_MUSTERI
 
-    kayit_id = context.user_data["kayit_id"]
+    kayit_id = context.user_data.get("kayit_id")
+    if kayit_id is None:
+        await update.message.reply_text("⚠️ Düzenleme oturumu sona ermiş. İşleme yeniden başlayınız.", reply_markup=ana_menu)
+        return ConversationHandler.END
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -642,7 +661,10 @@ async def yeni_tutar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return YENI_TUTAR
 
-    kayit_id = context.user_data["kayit_id"]
+    kayit_id = context.user_data.get("kayit_id")
+    if kayit_id is None:
+        await update.message.reply_text("⚠️ Düzenleme oturumu sona ermiş. İşleme yeniden başlayınız.", reply_markup=ana_menu)
+        return ConversationHandler.END
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -687,7 +709,10 @@ async def yeni_tur(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return YENI_TUR
 
-    kayit_id = context.user_data["kayit_id"]
+    kayit_id = context.user_data.get("kayit_id")
+    if kayit_id is None:
+        await update.message.reply_text("⚠️ Düzenleme oturumu sona ermiş. İşleme yeniden başlayınız.", reply_markup=ana_menu)
+        return ConversationHandler.END
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -736,7 +761,10 @@ async def sil_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return SIL_ONAY
 
-    kayit_id = context.user_data["kayit_id"]
+    kayit_id = context.user_data.get("kayit_id")
+    if kayit_id is None:
+        await update.message.reply_text("⚠️ Düzenleme oturumu sona ermiş. İşleme yeniden başlayınız.", reply_markup=ana_menu)
+        return ConversationHandler.END
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -808,29 +836,33 @@ def main():
         states={
             MUSTERI: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     musteri_al
                 )
             ],
 
             TUTAR: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     tutar_al
                 )
             ],
 
             ODEME_TURU: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     odeme_turu_al
                 )
             ],
         },
 
         fallbacks=[
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal),
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"), iptal),
+            MessageHandler(filters.Regex(r"^💰 Ödeme Ekle$"), odeme_baslat),
         ],
+        allow_reentry=True,
     )
 
     yonet_conversation = ConversationHandler(
@@ -846,57 +878,60 @@ def main():
         states={
             KAYIT_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     kayit_id_al
                 )
             ],
 
             ISLEM_SEC: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     islem_sec
                 )
             ],
 
             DUZENLEME_SEC: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     duzenleme_sec
                 )
             ],
 
             YENI_MUSTERI: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     yeni_musteri
                 )
             ],
 
             YENI_TUTAR: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     yeni_tutar
                 )
             ],
 
             YENI_TUR: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     yeni_tur
                 )
             ],
 
             SIL_ONAY: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"),
                     sil_onay
                 )
             ],
         },
 
         fallbacks=[
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal),
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex(r"^❌ (?:İşlemden Vazgeç|Vazgeç)$"), iptal),
         ],
+        allow_reentry=True,
     )
 
     application.add_handler(
